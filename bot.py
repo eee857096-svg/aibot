@@ -13,20 +13,20 @@ try:
 except ImportError:
     pass
 
-TOKEN             = os.getenv("AI_BOT_TOKEN")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+TOKEN          = os.getenv("AI_BOT_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not TOKEN:
     raise RuntimeError("AI_BOT_TOKEN environment variable is not set.")
-if not ANTHROPIC_API_KEY:
-    raise RuntimeError("ANTHROPIC_API_KEY environment variable is not set.")
+if not GEMINI_API_KEY:
+    raise RuntimeError("GEMINI_API_KEY environment variable is not set.")
 
 # ══════════════════════════════════════════════════════════
 #  CONFIG
 # ══════════════════════════════════════════════════════════
 AKIF_USERNAME  = "akif_47411"
-AI_MODEL       = "claude-sonnet-4-20250514"
-ANTHROPIC_API  = "https://api.anthropic.com/v1/messages"
+AI_MODEL       = "gemini-2.0-flash"
+GEMINI_API     = f"https://generativelanguage.googleapis.com/v1beta/models/{AI_MODEL}:generateContent"
 AI_MAX_HISTORY = 30       # messages kept per channel
 AI_MAX_TOKENS  = 1024
 
@@ -47,11 +47,13 @@ AKIF_RESPONSES = [
     "💀 The server felt a disturbance in the force... turns out someone mentioned **{mention}**, the one and only Aura King. 👑",
 ]
 
-AI_SYSTEM_PROMPT = """You are Crimson AI, a helpful, smart, and slightly witty Discord bot assistant.
-You help server members with questions, have real conversations, give advice, explain concepts, help with code, creative writing, and anything else.
-Keep responses concise and Discord-friendly — avoid massive walls of text. Use markdown where it helps (bold, code blocks, lists).
-Be casual, friendly and fun but always genuinely helpful. Never be rude, offensive, or inappropriate.
-If someone asks who you are, say you're Crimson AI, a custom Discord bot assistant."""
+AI_SYSTEM_PROMPT = (
+    "You are Crimson AI, a helpful, smart, and slightly witty Discord bot assistant. "
+    "You help server members with questions, have real conversations, give advice, explain concepts, help with code, creative writing, and anything else. "
+    "Keep responses concise and Discord-friendly — avoid massive walls of text. Use markdown where it helps (bold, code blocks, lists). "
+    "Be casual, friendly and fun but always genuinely helpful. Never be rude, offensive, or inappropriate. "
+    "If someone asks who you are, say you're Crimson AI, a custom Discord bot assistant."
+)
 
 # ══════════════════════════════════════════════════════════
 #  BOT INIT
@@ -94,31 +96,56 @@ def add_message(channel_id: int, role: str, content: str):
     if len(h) > AI_MAX_HISTORY:
         ai_conversations[channel_id] = h[-AI_MAX_HISTORY:]
 
-async def ask_claude(channel_id: int, question: str) -> str:
+async def ask_gemini(channel_id: int, question: str) -> str:
     add_message(channel_id, "user", question)
     history = get_history(channel_id)
 
+    # Convert history to Gemini format
+    # Gemini uses "user" / "model" roles and "parts" arrays
+    gemini_contents = []
+    for msg in history:
+        role = "model" if msg["role"] == "assistant" else "user"
+        gemini_contents.append({
+            "role": role,
+            "parts": [{"text": msg["content"]}]
+        })
+
+    payload = {
+        "system_instruction": {
+            "parts": [{"text": AI_SYSTEM_PROMPT}]
+        },
+        "contents": gemini_contents,
+        "generationConfig": {
+            "maxOutputTokens": AI_MAX_TOKENS,
+            "temperature": 0.9,
+        },
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_HARASSMENT",        "threshold": "BLOCK_ONLY_HIGH"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH",       "threshold": "BLOCK_ONLY_HIGH"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+        ]
+    }
+
+    url = f"{GEMINI_API}?key={GEMINI_API_KEY}"
+
     async with aiohttp.ClientSession() as s:
         async with s.post(
-            ANTHROPIC_API,
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": AI_MODEL,
-                "max_tokens": AI_MAX_TOKENS,
-                "system": AI_SYSTEM_PROMPT,
-                "messages": history,
-            },
+            url,
+            headers={"content-type": "application/json"},
+            json=payload,
             timeout=aiohttp.ClientTimeout(total=30)
         ) as r:
             if r.status != 200:
                 body = await r.text()
-                raise Exception(f"API {r.status}: {body[:200]}")
+                raise Exception(f"Gemini API {r.status}: {body[:300]}")
             data = await r.json()
-            reply = data["content"][0]["text"]
+
+            # Extract text from Gemini response
+            try:
+                reply = data["candidates"][0]["content"]["parts"][0]["text"]
+            except (KeyError, IndexError):
+                raise Exception(f"Unexpected Gemini response format: {str(data)[:200]}")
 
     add_message(channel_id, "assistant", reply)
     return reply
@@ -126,7 +153,7 @@ async def ask_claude(channel_id: int, question: str) -> str:
 async def send_ai_reply(msg_or_interaction, question: str, is_interaction=False):
     """Shared response sender — handles chunking for 2000 char limit."""
     try:
-        reply = await ask_claude(
+        reply = await ask_gemini(
             msg_or_interaction.channel.id if is_interaction else msg_or_interaction.channel.id,
             question
         )
@@ -157,7 +184,7 @@ async def send_ai_reply(msg_or_interaction, question: str, is_interaction=False)
                 await msg_or_interaction.reply(embed=e, mention_author=False)
 
     except Exception as ex:
-        error_msg = err("AI Error", f"Something went wrong: `{ex}`\n\nMake sure `ANTHROPIC_API_KEY` is set correctly.")
+        error_msg = err("AI Error", f"Something went wrong: `{ex}`\n\nMake sure `GEMINI_API_KEY` is set correctly.")
         if is_interaction:
             await msg_or_interaction.followup.send(embed=error_msg, ephemeral=True)
         else:
@@ -312,7 +339,7 @@ async def status(interaction: discord.Interaction):
     e.add_field(name="⏰ Uptime",            value=f"`{uptime}`",                                        inline=True)
     e.add_field(name="📍 AI Channel",        value=f"<#{ch_id}>" if ch_id else "Any (when mentioned)",   inline=True)
     e.add_field(name="💬 This Channel Mem",  value=f"`{hist}` / `{AI_MAX_HISTORY}` messages",            inline=True)
-    e.add_field(name="🧠 Model",             value=f"`{AI_MODEL}`",                                      inline=True)
+    e.add_field(name="🧠 Model",             value=f"`gemini-2.0-flash`",                               inline=True)
     e.add_field(name="💡 How to use",
                 value=(
                     "@mention me  •  `Crimson AI <question>`\n"
