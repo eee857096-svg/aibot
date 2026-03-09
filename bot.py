@@ -25,7 +25,7 @@ if not GROQ_API_KEY:
 #  GROQ CONFIG
 # ══════════════════════════════════════════════════════════
 GROQ_URL    = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL  = "llama3-70b-8192"
+GROQ_MODEL  = "llama-3.3-70b-versatile"
 GROQ_SYSTEM = (
     "You are Elliot, a friendly and funny AI assistant living inside a Discord server called Crimson Gen. "
     "You have a casual, Gen Z personality — you use words like 'bro', 'fr', 'ngl', 'W', 'L', 'no cap' etc naturally. "
@@ -101,6 +101,7 @@ async def ask_groq(channel_id: int, user_message: str) -> str:
                     return "I'm getting rate limited rn 😅 Try again in a sec!"
                 else:
                     text = await resp.text()
+                    print(f"❌ Groq error {resp.status}: {text}")
                     return f"Something went wrong on my end 😭 (Error {resp.status})"
     except asyncio.TimeoutError:
         return "Took too long to respond 😭 Try again!"
